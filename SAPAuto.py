@@ -1,18 +1,44 @@
 from pyrfc import Connection
 import openpyxl
+from datetime import datetime, timedelta
 
-#read SAP credentials
-def read_sap_credentials(filename):
-    with open(filename, 'r') as file:
-        lines = file.readlines()
-        username = lines[0].strip().split(':')[1]
-        password = lines[1].strip().split(':')[1]
-    return username, password
+def read_excel_data(file_path):
+    try:
+        wb = openpyxl.load_workbook(file_path)
+        header_sheet = wb['Header']
+        item_sheet = wb['Item']
+        
+        header_info = {
+            'SAPBox': header_sheet['A2'].value,
+            'OrderType': header_sheet['B2'].value,
+            'SalesOrg': header_sheet['C2'].value,
+            'DistributionChannel': header_sheet['D2'].value,
+            'Division': header_sheet['E2'].value,
+            'SoldToParty': header_sheet['F2'].value,
+            'ShipToParty': header_sheet['G2'].value,
+            'DeliveryPlant': header_sheet['H2'].value,
+            'PONumber': 'TA_' + datetime.now().strftime("%Y%m%d%H%M%S"),
+            'PODate': datetime.now().strftime("%Y%m%d"),
+            'DeliveryDate': (datetime.now() + timedelta(days=int(header_sheet['I2'].value))).strftime("%Y%m%d"),
+            'ShippingCondition': header_sheet['J2'].value,
+            'Vendor': header_sheet['K2'].value,
+        }
 
-#create a sales order
+        item_info = []
+        for row in item_sheet.iter_rows(min_row=2, values_only=True):
+            item_info.append({
+                'Material': row[0],
+                'Quantity': row[1],
+                'UoM': row[2],
+                'Sloc': row[3]
+            })
+
+        return header_info, item_info
+    except Exception as e:
+        raise Exception(f"Error reading Excel data: {e}")
+
 def create_sales_order(conn, header_info, item_info):
     try:
-        #Sales order header
         sales_order_header = {
             'SalesDocument': '',
             'SalesDocumentType': header_info['OrderType'],
@@ -22,20 +48,20 @@ def create_sales_order(conn, header_info, item_info):
             'SoldToParty': header_info['SoldToParty'],
             'ShipToParty': header_info['ShipToParty'],
             'PurchaseOrderNumber': header_info['PONumber'],
-            'PurchaseOrderDate': header_info['PODate'],  # Assuming PO Date is not provided in the Excel
+            'PurchaseOrderDate': header_info['PODate'],
             'DeliveryPlant': header_info['DeliveryPlant'],
-            'RequestedDeliveryDate': header_info['DeliveryDate'],  # Assuming Delivery Date is not provided in the Excel
+            'RequestedDeliveryDate': header_info['DeliveryDate'],
             'ShippingConditions': header_info['ShippingCondition'],
             'Vendor': header_info['Vendor'],
         }
 
-        #Call BAPI to create sales order header
         sales_order_header_result = conn.call('BAPI_SALESORDER_CREATEFROMDAT2', SalesOrderHeaderIn=sales_order_header)
 
-        #Sales order created
+        if sales_order_header_result['Return'] and sales_order_header_result['Return'][0]['Type'] == 'E':
+            raise Exception(f"Error creating sales order header: {sales_order_header_result['Return'][0]['Message']}")
+
         sales_document = sales_order_header_result['SalesOrder']
 
-        #Sales order items
         for item in item_info:
             sales_order_item = {
                 'SalesDocument': sales_document,
@@ -43,63 +69,22 @@ def create_sales_order(conn, header_info, item_info):
                 'Material': item['Material'],
                 'RequestedQuantity': item['Quantity'],
                 'RequestedQuantityUnit': item['UoM'],
-                'Plant': item['Sloc'],  # Assuming Storage Location is mapped to Plant
+                'Plant': item['Sloc'],
             }
 
-            #Call BAPI to create sales order item
             sales_order_item_result = conn.call('BAPI_SALESORDER_CREATEFROMDATA', OrderItemsIn=[sales_order_item])
 
-        print("Sales order created successfully.")
-        return sales_document
+            if sales_order_item_result['Return'] and sales_order_item_result['Return'][0]['Type'] == 'E':
+                raise Exception(f"Error creating sales order item: {sales_order_item_result['Return'][0]['Message']}")
 
+        return sales_document
     except Exception as e:
-        print(f"Error creating sales order: {e}")
-        raise
+        raise Exception(f"Error creating sales order: {e}")
 
 try:
-    #SAP credentials
-    username, password = read_sap_credentials("SAPCreds.txt")
-
-    # Connect to SAP
-    conn = Connection(user=username, passwd=password, ashost='your_sap_server', sysnr='00', client='100', lang='EN')
-
-    # Read Header information from Excel
-    wb = openpyxl.load_workbook('SAPAuto.xlsx')
-    header_sheet = wb['Header']
-    header_info = {
-        'SAPBox': header_sheet['A2'].value,
-        'OrderType': header_sheet['B2'].value,
-        'SalesOrg': header_sheet['C2'].value,
-        'DistributionChannel': header_sheet['D2'].value,
-        'Division': header_sheet['E2'].value,
-        'SoldToParty': header_sheet['F2'].value,
-        'ShipToParty': header_sheet['G2'].value,
-        'DeliveryPlant': header_sheet['H2'].value,
-        'PONumber': 'TA_' + datetime.now().strftime("%Y%m%d%H%M%S"),  # Generate PO Number
-        'PODate': datetime.now().strftime("%Y%m%d"),  # Assuming PO Date is current date
-        'DeliveryDate': (datetime.now() + timedelta(days=int(header_sheet['I2'].value))).strftime("%Y%m%d"),  # Calculate Delivery Date based on Transit Time
-        'ShippingCondition': header_sheet['J2'].value,
-        'Vendor': header_sheet['K2'].value,
-    }
-
-    # Read Item information from Excel
-    item_sheet = wb['Item']
-    item_info = []
-    for row in item_sheet.iter_rows(min_row=2, values_only=True):
-        item_info.append({
-            'Material': row[0],
-            'Quantity': row[1],
-            'UoM': row[2],
-            'Sloc': row[3]
-        })
-
-    #Sales Order in SAP
+    # Assume conn is already established
+    header_info, item_info = read_excel_data('SAPAuto.xlsx')
     sales_order = create_sales_order(conn, header_info, item_info)
-
+    print(f"Sales order created successfully. Sales Document: {sales_order}")
 except Exception as e:
     print(f"Error: {e}")
-
-finally:
-    if 'conn' in locals():
-        # Close connection to SAP
-        conn.close()
